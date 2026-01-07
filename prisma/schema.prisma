@@ -1,0 +1,274 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ USER & AUTH ============
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  name              String?
+  avatarUrl         String?
+  emailVerified     Boolean   @default(false)
+  emailVerifyToken  String?
+  passwordResetToken String?
+  passwordResetExpires DateTime?
+
+  // Subscription
+  stripeCustomerId  String?   @unique
+  subscriptionId    String?
+  subscriptionStatus SubscriptionStatus @default(FREE)
+  subscriptionPlan  String?
+  subscriptionEndDate DateTime?
+
+  // Usage limits
+  monthlyMinutesUsed Int      @default(0)
+  monthlyMinutesLimit Int     @default(60) // Free tier: 60 mins/month
+  lastUsageReset    DateTime  @default(now())
+
+  // Settings
+  preferredLanguage String    @default("en-US")
+  preferredProfile  String    @default("interview")
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastLoginAt       DateTime?
+
+  // Relations
+  sessions          Session[]
+  documents         Document[]
+  refreshTokens     RefreshToken[]
+  apiKeys           ApiKey[]
+  analytics         UserAnalytics?
+  usageLogs         UsageLog[]
+
+  @@index([email])
+  @@index([stripeCustomerId])
+}
+
+enum SubscriptionStatus {
+  FREE
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+  token       String   @unique
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceInfo  String?
+  ipAddress   String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([key])
+}
+
+// ============ SESSIONS ============
+
+model Session {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  profile         String   // interview, coding, meeting, etc.
+  language        String   @default("en-US")
+
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  durationSeconds Int      @default(0)
+
+  // Metrics
+  questionsCount  Int      @default(0)
+  responsesCount  Int      @default(0)
+  screenshotsCount Int     @default(0)
+
+  // Conversation history (stored as JSON)
+  messages        Json     @default("[]")
+
+  // Status
+  status          SessionStatus @default(ACTIVE)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([startedAt])
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  TERMINATED
+}
+
+// ============ DOCUMENTS ============
+
+model Document {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name          String
+  type          DocumentType
+  mimeType      String
+  size          Int      // bytes
+
+  // Storage
+  storagePath   String   // S3/local path
+  storageUrl    String?  // Public URL if applicable
+
+  // Content (for text-based documents)
+  textContent   String?  @db.Text
+  textLength    Int      @default(0)
+
+  // Metadata
+  language      String?
+  isCode        Boolean  @default(false)
+  codeLanguage  String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@index([type])
+}
+
+enum DocumentType {
+  RESUME
+  JOB_DESCRIPTION
+  COMPANY_INFO
+  NOTES
+  CODE
+  GENERAL
+}
+
+// ============ ANALYTICS ============
+
+model UserAnalytics {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Totals
+  totalSessions     Int      @default(0)
+  totalDuration     Int      @default(0) // seconds
+  totalQuestions    Int      @default(0)
+  totalResponses    Int      @default(0)
+
+  // Averages
+  avgSessionDuration Int     @default(0)
+  avgResponseTime   Int      @default(0) // milliseconds
+
+  // Streaks
+  currentStreak     Int      @default(0)
+  longestStreak     Int      @default(0)
+  lastActiveDate    DateTime?
+
+  // Profile usage (stored as JSON object)
+  profileUsage      Json     @default("{}")
+
+  // Daily stats (stored as JSON object)
+  dailyStats        Json     @default("{}")
+
+  updatedAt         DateTime @updatedAt
+}
+
+// ============ USAGE TRACKING ============
+
+model UsageLog {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        UsageType
+  minutes     Float    @default(0)
+  tokens      Int      @default(0)
+
+  sessionId   String?
+  metadata    Json?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([type])
+}
+
+enum UsageType {
+  SESSION
+  TRANSCRIPTION
+  AI_RESPONSE
+  SCREENSHOT_ANALYSIS
+}
+
+// ============ SUBSCRIPTION PLANS ============
+
+model Plan {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  description     String?
+
+  // Pricing
+  priceMonthly    Int      // cents
+  priceYearly     Int      // cents
+  stripePriceIdMonthly String?
+  stripePriceIdYearly  String?
+
+  // Limits
+  monthlyMinutes  Int      // -1 for unlimited
+  maxDocuments    Int
+  maxSessions     Int      // per day, -1 for unlimited
+
+  // Features
+  features        Json     @default("[]")
+
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ============ WEBHOOKS & EVENTS ============
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  source      String   // stripe, etc.
+  eventType   String
+  payload     Json
+  processed   Boolean  @default(false)
+  error       String?
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+
+  @@index([source, eventType])
+  @@index([processed])
+}
